@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en" dir="auto">
+
+<head><meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<meta name="robots" content="index, follow">
+<title>Raft | Voidsow&#39;s Blog</title>
+<meta name="keywords" content="">
+<meta name="description" content="算法概述 状态 所有节点的持久化状态 必须先持久化后再响应RPC
+currenTerm votedFor log[] 所有节点的非持久化状态 commitIndex：已提交日志索引的最大值。初始化为0，单调递增。 lastApplied：应用到状态机的日志索引的最大值。初始化为0，单调递增。 Leader的非持久化状态 选举结束后初始化
+nextIndex[]：每个节点的期望得到的下一条日志的索引。初始化为Leader日志索引最大值&#43;1。
+matchIndex[]：每个节点已经应用到状态机的日志的索引最大值。初始化为0，单调递增。
+AppendEntries RPC 参数 term：leader的任期 leaderId：Follower就可以重定向客户端请求到leader prevLogIndex：nextIndex的前驱日志索引 prevLogTerm：prevLogIndex对应日志的任期 entries[]：待存储的日志 leaderCommit：leader的commitIndex 返回值 term：自己的currenTerm，leader得以知道自己是否已经过期 success：当Follower保存有与prevLogIndex和prevLogTerm相对应的日志时返回true 接收者实现 当接收者的currentTerm&gt;term时，返回false，以提醒发送者任期过期。 在prevLogIndex位置不存在任期为prevLogTerm的位置时返回false。表示日志缺失。 当prevLogIndex位置的日志任期与prevLogTerm不匹配时返回false并将冲突位置及其之后的日志删除。 添加新日志。 如果leaderCommit&gt;commitIndex，设置新的commitIndex为min(leaderCommit,最后一条日志索引)。 RequestVote RPC 参数 term：candidate的任期 candidateId：发起选举的candidate的Id lastLogIndex：candidate的最后一条日志的索引 lastLogTerm：candidate的最后一条日志的任期 返回值 term：接收者的currenTerm，candidate得以知道自己是否已经过期 success：投票给candidate时返回true 接收者实现 当接收者的currentTerm&gt;term时，返回false，以提醒发送者任期过期。 如果candidate的日志至少和接收者的一样新，且votedFor为空或者正好等于candidateId时（注意Raft的RPC是幂等性的，因此当currentTerm = term &amp;&amp; votedFor = candidateIdx时表示上一次RequestVote的回复丢失了，应该重新响应）返回true。 行为规定 所有服务器 RPC请求或者响应携带的任期T大于当前任期currenTerm时，更新currenTerm为T，同时转换为Follower。对于旧任期的Leader而言，这意味着网络分区导致了新选举，而原来的Leader不在大多数分区，当分区通信恢复后，旧Leader应该跟随新的Leader。对于Candidate而言，更大任期的RequestVote意味着另一个Candidate发起了新的选举，即使本轮成为了Leader，也会马上收到下一轮的Leader的心跳。为了加速选举，Candidate收到了新任期的RPC直接放弃本轮选举，转换为Follower。 如果commitIndex&gt;lastApplied，递增lastApplied并将log[lastApplied]应用到状态机上。 Follower 如果在选举超时之前没有收到发送AppendEntries或RequestVote，则转换为Follower开启新的选举。
+Candidate 转换为Candidate的步骤： 递增currentTerm 给自己投票 重置选举定时器 并发地向所有节点发送RequestVote 如果得到多数选票，转换为Leader 如果收到了新Leader的AppendEntries，转换为Follower 如果选举超时，重新选举 Leader 转换为Leader后，马上向所有节点发送空AppendEntries作为心跳；每隔一段时间发送心跳。 收到客户端请求命令后写入本地日志，等到日志成功应用到状态机后再返回响应。 如果log最大索引≥nextIndex[i]，向第$i$个节点发送携带日志log[nextIndex[i]]的AppendEntries： 如果成功，更新nextIndex[i]和match[i]。 失败则递减nextIndex[i]并重试。 性质 选举安全性 一个任期最多只能有一个Leader。">
+<meta name="author" content="">
+<link rel="canonical" href="https://voidsow.github.io/note/raft/">
+<link crossorigin="anonymous" href="/assets/css/stylesheet.bc1149f4a72aa4858d3a9f71462f75e5884ffe8073ea9d6d5761d5663d651e20.css" integrity="sha256-vBFJ9KcqpIWNOp9xRi915YhP/oBz6p1tV2HVZj1lHiA=" rel="preload stylesheet" as="style">
+<script defer crossorigin="anonymous" src="/assets/js/highlight.f413e19d0714851f6474e7ee9632408e58ac146fbdbe62747134bea2fa3415e0.js" integrity="sha256-9BPhnQcUhR9kdOfuljJAjlisFG&#43;9vmJ0cTS&#43;ovo0FeA="
+    onload="hljs.initHighlightingOnLoad();"></script>
+<link rel="icon" href="https://voidsow.github.io/favicon.ico">
+<link rel="icon" type="image/png" sizes="16x16" href="https://voidsow.github.io/favicon-16x16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="https://voidsow.github.io/favicon-32x32.png">
+<link rel="apple-touch-icon" href="https://voidsow.github.io/apple-touch-icon.png">
+<link rel="mask-icon" href="https://voidsow.github.io/safari-pinned-tab.svg">
+<meta name="theme-color" content="#2e2e33">
+<meta name="msapplication-TileColor" content="#2e2e33">
+<noscript>
+    <style>
+        #theme-toggle,
+        .top-link {
+            display: none;
+        }
+
+    </style>
+    <style>
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --theme: rgb(29, 30, 32);
+                --entry: rgb(46, 46, 51);
+                --primary: rgb(218, 218, 219);
+                --secondary: rgb(155, 156, 157);
+                --tertiary: rgb(65, 66, 68);
+                --content: rgb(196, 196, 197);
+                --hljs-bg: rgb(46, 46, 51);
+                --code-bg: rgb(55, 56, 62);
+                --border: rgb(51, 51, 51);
+            }
+
+            .list {
+                background: var(--theme);
+            }
+
+            .list:not(.dark)::-webkit-scrollbar-track {
+                background: 0 0;
+            }
+
+            .list:not(.dark)::-webkit-scrollbar-thumb {
+                border-color: var(--theme);
+            }
+        }
+
+    </style>
+</noscript><meta property="og:title" content="Raft" />
+<meta property="og:description" content="算法概述 状态 所有节点的持久化状态 必须先持久化后再响应RPC
+currenTerm votedFor log[] 所有节点的非持久化状态 commitIndex：已提交日志索引的最大值。初始化为0，单调递增。 lastApplied：应用到状态机的日志索引的最大值。初始化为0，单调递增。 Leader的非持久化状态 选举结束后初始化
+nextIndex[]：每个节点的期望得到的下一条日志的索引。初始化为Leader日志索引最大值&#43;1。
+matchIndex[]：每个节点已经应用到状态机的日志的索引最大值。初始化为0，单调递增。
+AppendEntries RPC 参数 term：leader的任期 leaderId：Follower就可以重定向客户端请求到leader prevLogIndex：nextIndex的前驱日志索引 prevLogTerm：prevLogIndex对应日志的任期 entries[]：待存储的日志 leaderCommit：leader的commitIndex 返回值 term：自己的currenTerm，leader得以知道自己是否已经过期 success：当Follower保存有与prevLogIndex和prevLogTerm相对应的日志时返回true 接收者实现 当接收者的currentTerm&gt;term时，返回false，以提醒发送者任期过期。 在prevLogIndex位置不存在任期为prevLogTerm的位置时返回false。表示日志缺失。 当prevLogIndex位置的日志任期与prevLogTerm不匹配时返回false并将冲突位置及其之后的日志删除。 添加新日志。 如果leaderCommit&gt;commitIndex，设置新的commitIndex为min(leaderCommit,最后一条日志索引)。 RequestVote RPC 参数 term：candidate的任期 candidateId：发起选举的candidate的Id lastLogIndex：candidate的最后一条日志的索引 lastLogTerm：candidate的最后一条日志的任期 返回值 term：接收者的currenTerm，candidate得以知道自己是否已经过期 success：投票给candidate时返回true 接收者实现 当接收者的currentTerm&gt;term时，返回false，以提醒发送者任期过期。 如果candidate的日志至少和接收者的一样新，且votedFor为空或者正好等于candidateId时（注意Raft的RPC是幂等性的，因此当currentTerm = term &amp;&amp; votedFor = candidateIdx时表示上一次RequestVote的回复丢失了，应该重新响应）返回true。 行为规定 所有服务器 RPC请求或者响应携带的任期T大于当前任期currenTerm时，更新currenTerm为T，同时转换为Follower。对于旧任期的Leader而言，这意味着网络分区导致了新选举，而原来的Leader不在大多数分区，当分区通信恢复后，旧Leader应该跟随新的Leader。对于Candidate而言，更大任期的RequestVote意味着另一个Candidate发起了新的选举，即使本轮成为了Leader，也会马上收到下一轮的Leader的心跳。为了加速选举，Candidate收到了新任期的RPC直接放弃本轮选举，转换为Follower。 如果commitIndex&gt;lastApplied，递增lastApplied并将log[lastApplied]应用到状态机上。 Follower 如果在选举超时之前没有收到发送AppendEntries或RequestVote，则转换为Follower开启新的选举。
+Candidate 转换为Candidate的步骤： 递增currentTerm 给自己投票 重置选举定时器 并发地向所有节点发送RequestVote 如果得到多数选票，转换为Leader 如果收到了新Leader的AppendEntries，转换为Follower 如果选举超时，重新选举 Leader 转换为Leader后，马上向所有节点发送空AppendEntries作为心跳；每隔一段时间发送心跳。 收到客户端请求命令后写入本地日志，等到日志成功应用到状态机后再返回响应。 如果log最大索引≥nextIndex[i]，向第$i$个节点发送携带日志log[nextIndex[i]]的AppendEntries： 如果成功，更新nextIndex[i]和match[i]。 失败则递减nextIndex[i]并重试。 性质 选举安全性 一个任期最多只能有一个Leader。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://voidsow.github.io/note/raft/" /><meta property="article:section" content="note" />
+<meta property="article:published_time" content="2022-10-23T23:59:47+08:00" />
+<meta property="article:modified_time" content="2022-10-23T23:59:47+08:00" />
+
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Raft"/>
+<meta name="twitter:description" content="算法概述 状态 所有节点的持久化状态 必须先持久化后再响应RPC
+currenTerm votedFor log[] 所有节点的非持久化状态 commitIndex：已提交日志索引的最大值。初始化为0，单调递增。 lastApplied：应用到状态机的日志索引的最大值。初始化为0，单调递增。 Leader的非持久化状态 选举结束后初始化
+nextIndex[]：每个节点的期望得到的下一条日志的索引。初始化为Leader日志索引最大值&#43;1。
+matchIndex[]：每个节点已经应用到状态机的日志的索引最大值。初始化为0，单调递增。
+AppendEntries RPC 参数 term：leader的任期 leaderId：Follower就可以重定向客户端请求到leader prevLogIndex：nextIndex的前驱日志索引 prevLogTerm：prevLogIndex对应日志的任期 entries[]：待存储的日志 leaderCommit：leader的commitIndex 返回值 term：自己的currenTerm，leader得以知道自己是否已经过期 success：当Follower保存有与prevLogIndex和prevLogTerm相对应的日志时返回true 接收者实现 当接收者的currentTerm&gt;term时，返回false，以提醒发送者任期过期。 在prevLogIndex位置不存在任期为prevLogTerm的位置时返回false。表示日志缺失。 当prevLogIndex位置的日志任期与prevLogTerm不匹配时返回false并将冲突位置及其之后的日志删除。 添加新日志。 如果leaderCommit&gt;commitIndex，设置新的commitIndex为min(leaderCommit,最后一条日志索引)。 RequestVote RPC 参数 term：candidate的任期 candidateId：发起选举的candidate的Id lastLogIndex：candidate的最后一条日志的索引 lastLogTerm：candidate的最后一条日志的任期 返回值 term：接收者的currenTerm，candidate得以知道自己是否已经过期 success：投票给candidate时返回true 接收者实现 当接收者的currentTerm&gt;term时，返回false，以提醒发送者任期过期。 如果candidate的日志至少和接收者的一样新，且votedFor为空或者正好等于candidateId时（注意Raft的RPC是幂等性的，因此当currentTerm = term &amp;&amp; votedFor = candidateIdx时表示上一次RequestVote的回复丢失了，应该重新响应）返回true。 行为规定 所有服务器 RPC请求或者响应携带的任期T大于当前任期currenTerm时，更新currenTerm为T，同时转换为Follower。对于旧任期的Leader而言，这意味着网络分区导致了新选举，而原来的Leader不在大多数分区，当分区通信恢复后，旧Leader应该跟随新的Leader。对于Candidate而言，更大任期的RequestVote意味着另一个Candidate发起了新的选举，即使本轮成为了Leader，也会马上收到下一轮的Leader的心跳。为了加速选举，Candidate收到了新任期的RPC直接放弃本轮选举，转换为Follower。 如果commitIndex&gt;lastApplied，递增lastApplied并将log[lastApplied]应用到状态机上。 Follower 如果在选举超时之前没有收到发送AppendEntries或RequestVote，则转换为Follower开启新的选举。
+Candidate 转换为Candidate的步骤： 递增currentTerm 给自己投票 重置选举定时器 并发地向所有节点发送RequestVote 如果得到多数选票，转换为Leader 如果收到了新Leader的AppendEntries，转换为Follower 如果选举超时，重新选举 Leader 转换为Leader后，马上向所有节点发送空AppendEntries作为心跳；每隔一段时间发送心跳。 收到客户端请求命令后写入本地日志，等到日志成功应用到状态机后再返回响应。 如果log最大索引≥nextIndex[i]，向第$i$个节点发送携带日志log[nextIndex[i]]的AppendEntries： 如果成功，更新nextIndex[i]和match[i]。 失败则递减nextIndex[i]并重试。 性质 选举安全性 一个任期最多只能有一个Leader。"/>
+
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position":  1 ,
+      "name": "Notes",
+      "item": "https://voidsow.github.io/note/"
+    }, 
+    {
+      "@type": "ListItem",
+      "position":  2 ,
+      "name": "Raft",
+      "item": "https://voidsow.github.io/note/raft/"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "Raft",
+  "name": "Raft",
+  "description": "算法概述 状态 所有节点的持久化状态 必须先持久化后再响应RPC\ncurrenTerm votedFor log[] 所有节点的非持久化状态 commitIndex：已提交日志索引的最大值。初始化为0，单调递增。 lastApplied：应用到状态机的日志索引的最大值。初始化为0，单调递增。 Leader的非持久化状态 选举结束后初始化\nnextIndex[]：每个节点的期望得到的下一条日志的索引。初始化为Leader日志索引最大值+1。\nmatchIndex[]：每个节点已经应用到状态机的日志的索引最大值。初始化为0，单调递增。\nAppendEntries RPC 参数 term：leader的任期 leaderId：Follower就可以重定向客户端请求到leader prevLogIndex：nextIndex的前驱日志索引 prevLogTerm：prevLogIndex对应日志的任期 entries[]：待存储的日志 leaderCommit：leader的commitIndex 返回值 term：自己的currenTerm，leader得以知道自己是否已经过期 success：当Follower保存有与prevLogIndex和prevLogTerm相对应的日志时返回true 接收者实现 当接收者的currentTerm\u0026gt;term时，返回false，以提醒发送者任期过期。 在prevLogIndex位置不存在任期为prevLogTerm的位置时返回false。表示日志缺失。 当prevLogIndex位置的日志任期与prevLogTerm不匹配时返回false并将冲突位置及其之后的日志删除。 添加新日志。 如果leaderCommit\u0026gt;commitIndex，设置新的commitIndex为min(leaderCommit,最后一条日志索引)。 RequestVote RPC 参数 term：candidate的任期 candidateId：发起选举的candidate的Id lastLogIndex：candidate的最后一条日志的索引 lastLogTerm：candidate的最后一条日志的任期 返回值 term：接收者的currenTerm，candidate得以知道自己是否已经过期 success：投票给candidate时返回true 接收者实现 当接收者的currentTerm\u0026gt;term时，返回false，以提醒发送者任期过期。 如果candidate的日志至少和接收者的一样新，且votedFor为空或者正好等于candidateId时（注意Raft的RPC是幂等性的，因此当currentTerm = term \u0026amp;\u0026amp; votedFor = candidateIdx时表示上一次RequestVote的回复丢失了，应该重新响应）返回true。 行为规定 所有服务器 RPC请求或者响应携带的任期T大于当前任期currenTerm时，更新currenTerm为T，同时转换为Follower。对于旧任期的Leader而言，这意味着网络分区导致了新选举，而原来的Leader不在大多数分区，当分区通信恢复后，旧Leader应该跟随新的Leader。对于Candidate而言，更大任期的RequestVote意味着另一个Candidate发起了新的选举，即使本轮成为了Leader，也会马上收到下一轮的Leader的心跳。为了加速选举，Candidate收到了新任期的RPC直接放弃本轮选举，转换为Follower。 如果commitIndex\u0026gt;lastApplied，递增lastApplied并将log[lastApplied]应用到状态机上。 Follower 如果在选举超时之前没有收到发送AppendEntries或RequestVote，则转换为Follower开启新的选举。\nCandidate 转换为Candidate的步骤： 递增currentTerm 给自己投票 重置选举定时器 并发地向所有节点发送RequestVote 如果得到多数选票，转换为Leader 如果收到了新Leader的AppendEntries，转换为Follower 如果选举超时，重新选举 Leader 转换为Leader后，马上向所有节点发送空AppendEntries作为心跳；每隔一段时间发送心跳。 收到客户端请求命令后写入本地日志，等到日志成功应用到状态机后再返回响应。 如果log最大索引≥nextIndex[i]，向第$i$个节点发送携带日志log[nextIndex[i]]的AppendEntries： 如果成功，更新nextIndex[i]和match[i]。 失败则递减nextIndex[i]并重试。 性质 选举安全性 一个任期最多只能有一个Leader。",
+  "keywords": [
+    
+  ],
+  "articleBody": "算法概述 状态 所有节点的持久化状态 必须先持久化后再响应RPC\ncurrenTerm votedFor log[] 所有节点的非持久化状态 commitIndex：已提交日志索引的最大值。初始化为0，单调递增。 lastApplied：应用到状态机的日志索引的最大值。初始化为0，单调递增。 Leader的非持久化状态 选举结束后初始化\nnextIndex[]：每个节点的期望得到的下一条日志的索引。初始化为Leader日志索引最大值+1。\nmatchIndex[]：每个节点已经应用到状态机的日志的索引最大值。初始化为0，单调递增。\nAppendEntries RPC 参数 term：leader的任期 leaderId：Follower就可以重定向客户端请求到leader prevLogIndex：nextIndex的前驱日志索引 prevLogTerm：prevLogIndex对应日志的任期 entries[]：待存储的日志 leaderCommit：leader的commitIndex 返回值 term：自己的currenTerm，leader得以知道自己是否已经过期 success：当Follower保存有与prevLogIndex和prevLogTerm相对应的日志时返回true 接收者实现 当接收者的currentTerm\u003eterm时，返回false，以提醒发送者任期过期。 在prevLogIndex位置不存在任期为prevLogTerm的位置时返回false。表示日志缺失。 当prevLogIndex位置的日志任期与prevLogTerm不匹配时返回false并将冲突位置及其之后的日志删除。 添加新日志。 如果leaderCommit\u003ecommitIndex，设置新的commitIndex为min(leaderCommit,最后一条日志索引)。 RequestVote RPC 参数 term：candidate的任期 candidateId：发起选举的candidate的Id lastLogIndex：candidate的最后一条日志的索引 lastLogTerm：candidate的最后一条日志的任期 返回值 term：接收者的currenTerm，candidate得以知道自己是否已经过期 success：投票给candidate时返回true 接收者实现 当接收者的currentTerm\u003eterm时，返回false，以提醒发送者任期过期。 如果candidate的日志至少和接收者的一样新，且votedFor为空或者正好等于candidateId时（注意Raft的RPC是幂等性的，因此当currentTerm = term \u0026\u0026 votedFor = candidateIdx时表示上一次RequestVote的回复丢失了，应该重新响应）返回true。 行为规定 所有服务器 RPC请求或者响应携带的任期T大于当前任期currenTerm时，更新currenTerm为T，同时转换为Follower。对于旧任期的Leader而言，这意味着网络分区导致了新选举，而原来的Leader不在大多数分区，当分区通信恢复后，旧Leader应该跟随新的Leader。对于Candidate而言，更大任期的RequestVote意味着另一个Candidate发起了新的选举，即使本轮成为了Leader，也会马上收到下一轮的Leader的心跳。为了加速选举，Candidate收到了新任期的RPC直接放弃本轮选举，转换为Follower。 如果commitIndex\u003elastApplied，递增lastApplied并将log[lastApplied]应用到状态机上。 Follower 如果在选举超时之前没有收到发送AppendEntries或RequestVote，则转换为Follower开启新的选举。\nCandidate 转换为Candidate的步骤： 递增currentTerm 给自己投票 重置选举定时器 并发地向所有节点发送RequestVote 如果得到多数选票，转换为Leader 如果收到了新Leader的AppendEntries，转换为Follower 如果选举超时，重新选举 Leader 转换为Leader后，马上向所有节点发送空AppendEntries作为心跳；每隔一段时间发送心跳。 收到客户端请求命令后写入本地日志，等到日志成功应用到状态机后再返回响应。 如果log最大索引≥nextIndex[i]，向第$i$个节点发送携带日志log[nextIndex[i]]的AppendEntries： 如果成功，更新nextIndex[i]和match[i]。 失败则递减nextIndex[i]并重试。 性质 选举安全性 一个任期最多只能有一个Leader。\nLeader只追加日志 Leader永远不覆盖或删除日志，只追加日志。\n日志匹配 如果两条日志索引和任期相同，那么两条日志之前的所有日志按顺序相同。\nLeader完整性 已提交的日志会出现在将来所有Leader的日志中。\n状态机安全性 如果某个节点应用了其索引i处的日志，那么这条日志会被应用到所有其他节点。\n可理解性 Raft提出的目的之一就是可理解性。为此，Raft尽可能详细清楚地阐述算法：\n使用领导者使得Raft比对等点对点的Paxos更加简单。\n将问题分解为容易理解和解决的独立部分。Raft将一致性问题分解为：领导者选举、日志复制和安全性三个子问题。\n减少状态数量以消除算法的不确定性。例如：\nRaft通过随机的方式选择Leader。Raft一开始设想过设计一种排名系统，基于Candidate的排名选举Leader。但这种做法在可用性方面略显不足：高排名的Candidate宕机会导致低排名的Candidate超时重新选举，极端情况下会导致选举不断重置。经过多次试验后，作者得出结论随机重试更加易于理解。 日志不允许有空洞？（待思考确认） 算法基础 日志复制 日志可以被安全地应用到状态机，称其为已提交的。Raft保证已提交的日志必须持久化并且最终会被所有可用的状态机执行。因此只有日志复制到半数以上的服务器上时才可提交。当日志提交后，服务器就会将提交的日志按照顺序应用到状态机中。\n在讨论保证安全性时，已提交的概念会发生些许变动。\n日志的匹配特性是安全性的重要保证：\n如果在不同的日志中的两个条目拥有相同的索引和任期号，那么他们存储了相同的指令。\n一个任期只有一个Leader，Leader最多在一个任期里在指定的一个日志索引位置创建一条日志条目。因此，任期和索引相同的日志必是同一条。\n如果在不同的日志中的两个条目拥有相同的索引和任期号，那么他们之前的所有日志条目也全部相同。\n这条性质是由AppendEntries附加的一致性检查保证的：Follow从首个匹配Leader的索引开始复制日志。\n可以使用数学归纳法证明：一开始的初始空日志状态显然满足日志匹配特性，之后每一次拓展日志时，已经存在的与Leader相同的日志如果符合匹配特性，那么一致性检查后添加的日志也必定和Leader相同，也符合匹配特性。\n正常情况下，Leader和Follower的日志保持一致，一致性检查永远不会失败。然而，Leader崩溃的情况会使得日志处于不一致的状态（老的Leader可能还没有完全复制所有的日志条目），Follower可能会丢失一些在新的领导者中有的日志条目，也可能拥有一些领导者没有的日志条目，或者两者都发生。丢失或者多出日志条目可能会持续多个任期。 Raft通过强制跟随者直接复制Leader的日志解决这个问题。\n安全性 上述机制不足以保证安全性——每个状态机按照相同的顺序应用相同的日志。例如，Follower可能在尚未复制已提交的日志下被选为Leader，并因此覆盖了这些提交的日志。必须对选举Leader添加限制以保证领导者完整性。\n选举限制 Leader必须包含所有已提交的日志。Raft通过限制投票的方式实现：持有更新日志的Candidate才能获得选票。RequestVote会携带Candidate最后一条日志的索引和任期，Follower会其与自己最新的日志比较：\n任期更大的日志更新 任期相同时，索引更大的日志更新 只要Candidate发送的日志比Follower旧，Follow就会拒绝投票。已经提交的日志必然保存在大多数服务器上，而Candidate必须获得大多数服务器的投票才能称为Leader，根据容斥原理，二者必有交集。也就是说Candidate必须获得保存有提交日志服务器中至少其中一个的投票，即Candidate必须具有已提交的这条日志。这就保证了所有已经提交的日志必然出现在新的Leader中。\n提交限制 在讨论日志提交曾经提到为了保证安全性，必须调整提交的概念。考虑下面这个例子\n任期c的Leader已经把日志2复制到了大多数节点上，但是这时还不能称日志2为已提交的。因为如果这时S1崩溃随后S5又一次赢得了选举，日志2就会被S5的日志3覆盖。d1并不违反提交原始的定义和约束，但是违反了日志提交后必须应用到状态机的约束。\n出现这个问题的原因是Raft比较日志新旧程度时优先比较任期。因此复制旧任期的日志不能马上提交，必须等到至少一条新任期的日志复制到大多数节点时才可以提交，这可以保证旧任期的日志不会被中间任期覆盖。即必须等到d2中日志4也复制到大多数节点时，日志2才可以提交，这就避免了S5的日志3覆盖日志2的可能性。\n持久化存储 Log Raft算法的核心就是同步日志。当服务器宕机后唯一能用来重建状态机的数据就是Log，想象一下，在Log没有持久化保存的情况下所有的服务器都宕机了根本无法重建状态机。因此Log必须被持久化。\nvotedFor Raft的选举规则规定Follower每个任期只能投一张票。如果不保存votedFor，那么重启时就无法知道崩溃前给哪个Candidate投过票，Follower也就不知道是否应该给当前接收到的RequestVote投票。为了防止同个任期重复投票的情况，votedFor必须持久化。\nCurrentTerm 单纯知道voteFor并不能保证唯一投票，因为服务器重启后不知道上一次的投票任期。从Log的任期推断最大任期是不正确的，因为一次没有Leader的选举任期没有产生任何Log，也就无法从Log中得知最大投票任期。因此持久化当前任期CurrentTerm也是必须的。\n",
+  "wordCount" : "120",
+  "inLanguage": "en",
+  "datePublished": "2022-10-23T23:59:47+08:00",
+  "dateModified": "2022-10-23T23:59:47+08:00",
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://voidsow.github.io/note/raft/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Voidsow's Blog",
+    "logo": {
+      "@type": "ImageObject",
+      "url": "https://voidsow.github.io/favicon.ico"
+    }
+  }
+}
+</script>
+</head>
+
+<body class="" id="top">
+<script>
+    if (localStorage.getItem("pref-theme") === "dark") {
+        document.body.classList.add('dark');
+    } else if (localStorage.getItem("pref-theme") === "light") {
+        document.body.classList.remove('dark')
+    } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.body.classList.add('dark');
+    }
+
+</script>
+
+<header class="header">
+    <nav class="nav">
+        <div class="logo">
+            <a href="https://voidsow.github.io/" accesskey="h" title="Voidsow&#39;s Blog (Alt + H)">Voidsow&#39;s Blog</a>
+            <div class="logo-switches">
+                <button id="theme-toggle" accesskey="t" title="(Alt + T)">
+                    <svg id="moon" xmlns="http://www.w3.org/2000/svg" width="24" height="18" viewBox="0 0 24 24"
+                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                    <svg id="sun" xmlns="http://www.w3.org/2000/svg" width="24" height="18" viewBox="0 0 24 24"
+                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <ul id="menu">
+            <li>
+                <a href="https://voidsow.github.io/archives/" title="归档">
+                    <span>归档</span>
+                </a>
+            </li>
+            <li>
+                <a href="https://voidsow.github.io/categories/" title="分类">
+                    <span>分类</span>
+                </a>
+            </li>
+            <li>
+                <a href="https://voidsow.github.io/tags/" title="标签">
+                    <span>标签</span>
+                </a>
+            </li>
+        </ul>
+    </nav>
+</header>
+<main class="main">
+
+<article class="post-single">
+  <header class="post-header">
+    
+    <h1 class="post-title">
+      Raft<sup><span class="entry-isdraft">&nbsp;&nbsp;[draft]</span></sup>
+    </h1>
+    <div class="post-meta"><span title='2022-10-23 23:59:47 +0800 CST'>October 23, 2022</span>
+
+</div>
+  </header> <div class="toc">
+    <details >
+        <summary accesskey="c" title="(Alt + C)">
+            <span class="details">Table of Contents</span>
+        </summary>
+
+        <div class="inner"><ul>
+                <li>
+                    <a href="#%e7%ae%97%e6%b3%95%e6%a6%82%e8%bf%b0" aria-label="算法概述">算法概述</a><ul>
+                        
+                <li>
+                    <a href="#%e7%8a%b6%e6%80%81" aria-label="状态">状态</a><ul>
+                        
+                <li>
+                    <a href="#%e6%89%80%e6%9c%89%e8%8a%82%e7%82%b9%e7%9a%84%e6%8c%81%e4%b9%85%e5%8c%96%e7%8a%b6%e6%80%81" aria-label="所有节点的持久化状态">所有节点的持久化状态</a></li>
+                <li>
+                    <a href="#%e6%89%80%e6%9c%89%e8%8a%82%e7%82%b9%e7%9a%84%e9%9d%9e%e6%8c%81%e4%b9%85%e5%8c%96%e7%8a%b6%e6%80%81" aria-label="所有节点的非持久化状态">所有节点的非持久化状态</a></li>
+                <li>
+                    <a href="#leader%e7%9a%84%e9%9d%9e%e6%8c%81%e4%b9%85%e5%8c%96%e7%8a%b6%e6%80%81" aria-label="Leader的非持久化状态">Leader的非持久化状态</a></li></ul>
+                </li>
+                <li>
+                    <a href="#appendentries-rpc" aria-label="AppendEntries RPC"><code>AppendEntries</code> RPC</a><ul>
+                        
+                <li>
+                    <a href="#%e5%8f%82%e6%95%b0" aria-label="参数">参数</a></li>
+                <li>
+                    <a href="#%e8%bf%94%e5%9b%9e%e5%80%bc" aria-label="返回值">返回值</a></li>
+                <li>
+                    <a href="#%e6%8e%a5%e6%94%b6%e8%80%85%e5%ae%9e%e7%8e%b0" aria-label="接收者实现">接收者实现</a></li></ul>
+                </li>
+                <li>
+                    <a href="#requestvote-rpc" aria-label="RequestVote RPC"><code>RequestVote</code> RPC</a><ul>
+                        
+                <li>
+                    <a href="#%e5%8f%82%e6%95%b0-1" aria-label="参数">参数</a></li>
+                <li>
+                    <a href="#%e8%bf%94%e5%9b%9e%e5%80%bc-1" aria-label="返回值">返回值</a></li>
+                <li>
+                    <a href="#%e6%8e%a5%e6%94%b6%e8%80%85%e5%ae%9e%e7%8e%b0-1" aria-label="接收者实现">接收者实现</a></li></ul>
+                </li>
+                <li>
+                    <a href="#%e8%a1%8c%e4%b8%ba%e8%a7%84%e5%ae%9a" aria-label="行为规定">行为规定</a><ul>
+                        
+                <li>
+                    <a href="#%e6%89%80%e6%9c%89%e6%9c%8d%e5%8a%a1%e5%99%a8" aria-label="所有服务器">所有服务器</a></li>
+                <li>
+                    <a href="#follower" aria-label="Follower">Follower</a></li>
+                <li>
+                    <a href="#candidate" aria-label="Candidate">Candidate</a></li>
+                <li>
+                    <a href="#leader" aria-label="Leader">Leader</a></li></ul>
+                </li>
+                <li>
+                    <a href="#%e6%80%a7%e8%b4%a8" aria-label="性质">性质</a><ul>
+                        
+                <li>
+                    <a href="#%e9%80%89%e4%b8%be%e5%ae%89%e5%85%a8%e6%80%a7" aria-label="选举安全性">选举安全性</a></li>
+                <li>
+                    <a href="#leader%e5%8f%aa%e8%bf%bd%e5%8a%a0%e6%97%a5%e5%bf%97" aria-label="Leader只追加日志">Leader只追加日志</a></li>
+                <li>
+                    <a href="#%e6%97%a5%e5%bf%97%e5%8c%b9%e9%85%8d" aria-label="日志匹配">日志匹配</a></li>
+                <li>
+                    <a href="#leader%e5%ae%8c%e6%95%b4%e6%80%a7" aria-label="Leader完整性">Leader完整性</a></li>
+                <li>
+                    <a href="#%e7%8a%b6%e6%80%81%e6%9c%ba%e5%ae%89%e5%85%a8%e6%80%a7" aria-label="状态机安全性">状态机安全性</a></li></ul>
+                </li>
+                <li>
+                    <a href="#%e5%8f%af%e7%90%86%e8%a7%a3%e6%80%a7" aria-label="可理解性">可理解性</a></li>
+                <li>
+                    <a href="#%e7%ae%97%e6%b3%95%e5%9f%ba%e7%a1%80" aria-label="算法基础">算法基础</a><ul>
+                        
+                <li>
+                    <a href="#%e6%97%a5%e5%bf%97%e5%a4%8d%e5%88%b6" aria-label="日志复制">日志复制</a></li>
+                <li>
+                    <a href="#%e5%ae%89%e5%85%a8%e6%80%a7" aria-label="安全性">安全性</a><ul>
+                        
+                <li>
+                    <a href="#%e9%80%89%e4%b8%be%e9%99%90%e5%88%b6" aria-label="选举限制">选举限制</a></li>
+                <li>
+                    <a href="#%e6%8f%90%e4%ba%a4%e9%99%90%e5%88%b6" aria-label="提交限制">提交限制</a></li></ul>
+                </li>
+                <li>
+                    <a href="#%e6%8c%81%e4%b9%85%e5%8c%96%e5%ad%98%e5%82%a8" aria-label="持久化存储">持久化存储</a><ul>
+                        
+                <li>
+                    <a href="#log" aria-label="Log"><code>Log</code></a></li>
+                <li>
+                    <a href="#votedfor" aria-label="votedFor"><code>votedFor</code></a></li>
+                <li>
+                    <a href="#currentterm" aria-label="CurrentTerm"><code>CurrentTerm</code></a>
+                </li>
+            </ul>
+            </li>
+            </ul>
+            </li>
+            </ul>
+            </li>
+            </ul>
+        </div>
+    </details>
+</div>
+
+  <div class="post-content"><h2 id="算法概述">算法概述<a hidden class="anchor" aria-hidden="true" href="#算法概述">#</a></h2>
+<h3 id="状态">状态<a hidden class="anchor" aria-hidden="true" href="#状态">#</a></h3>
+<h4 id="所有节点的持久化状态">所有节点的持久化状态<a hidden class="anchor" aria-hidden="true" href="#所有节点的持久化状态">#</a></h4>
+<p>必须先持久化后再响应RPC</p>
+<ul>
+<li><code>currenTerm</code></li>
+<li><code>votedFor</code></li>
+<li><code>log[]</code></li>
+</ul>
+<h4 id="所有节点的非持久化状态">所有节点的非持久化状态<a hidden class="anchor" aria-hidden="true" href="#所有节点的非持久化状态">#</a></h4>
+<ul>
+<li><code>commitIndex</code>：已提交日志索引的最大值。初始化为0，单调递增。</li>
+<li><code>lastApplied</code>：应用到状态机的日志索引的最大值。初始化为0，单调递增。</li>
+</ul>
+<h4 id="leader的非持久化状态">Leader的非持久化状态<a hidden class="anchor" aria-hidden="true" href="#leader的非持久化状态">#</a></h4>
+<p>选举结束后初始化</p>
+<ul>
+<li>
+<p><code>nextIndex[]</code>：每个节点的期望得到的下一条日志的索引。初始化为Leader日志索引最大值+1。</p>
+</li>
+<li>
+<p><code>matchIndex[]</code>：每个节点已经应用到状态机的日志的索引最大值。初始化为0，单调递增。</p>
+</li>
+</ul>
+<h3 id="appendentries-rpc"><code>AppendEntries</code> RPC<a hidden class="anchor" aria-hidden="true" href="#appendentries-rpc">#</a></h3>
+<h4 id="参数">参数<a hidden class="anchor" aria-hidden="true" href="#参数">#</a></h4>
+<ul>
+<li><code>term</code>：leader的任期</li>
+<li><code>leaderId</code>：Follower就可以重定向客户端请求到leader</li>
+<li><code>prevLogIndex</code>：nextIndex的前驱日志索引</li>
+<li><code>prevLogTerm</code>：<code>prevLogIndex</code>对应日志的任期</li>
+<li><code>entries[]</code>：待存储的日志</li>
+<li><code>leaderCommit</code>：leader的<code>commitIndex</code></li>
+</ul>
+<h4 id="返回值">返回值<a hidden class="anchor" aria-hidden="true" href="#返回值">#</a></h4>
+<ul>
+<li><code>term</code>：自己的<code>currenTerm</code>，leader得以知道自己是否已经过期</li>
+<li><code>success</code>：当Follower保存有与<code>prevLogIndex</code>和<code>prevLogTerm</code>相对应的日志时返回<code>true</code></li>
+</ul>
+<h4 id="接收者实现">接收者实现<a hidden class="anchor" aria-hidden="true" href="#接收者实现">#</a></h4>
+<ol>
+<li>当接收者的<code>currentTerm</code>&gt;<code>term</code>时，返回<code>false</code>，以提醒发送者任期过期。</li>
+<li>在<code>prevLogIndex</code>位置不存在任期为<code>prevLogTerm</code>的位置时返回<code>false</code>。表示日志缺失。</li>
+<li>当<code>prevLogIndex</code>位置的日志任期与<code>prevLogTerm</code>不匹配时返回<code>false</code>并将冲突位置及其之后的日志删除。</li>
+<li>添加新日志。</li>
+<li>如果<code>leaderCommit</code>&gt;<code>commitIndex</code>，设置新的<code>commitIndex</code>为<code>min(leaderCommit,最后一条日志索引)</code>。</li>
+</ol>
+<h3 id="requestvote-rpc"><code>RequestVote</code> RPC<a hidden class="anchor" aria-hidden="true" href="#requestvote-rpc">#</a></h3>
+<h4 id="参数-1">参数<a hidden class="anchor" aria-hidden="true" href="#参数-1">#</a></h4>
+<ul>
+<li><code>term</code>：candidate的任期</li>
+<li><code>candidateId</code>：发起选举的candidate的Id</li>
+<li><code>lastLogIndex</code>：candidate的最后一条日志的索引</li>
+<li><code>lastLogTerm</code>：candidate的最后一条日志的任期</li>
+</ul>
+<h4 id="返回值-1">返回值<a hidden class="anchor" aria-hidden="true" href="#返回值-1">#</a></h4>
+<ul>
+<li><code>term</code>：接收者的<code>currenTerm</code>，candidate得以知道自己是否已经过期</li>
+<li><code>success</code>：投票给candidate时返回<code>true</code></li>
+</ul>
+<h4 id="接收者实现-1">接收者实现<a hidden class="anchor" aria-hidden="true" href="#接收者实现-1">#</a></h4>
+<ol>
+<li>当接收者的<code>currentTerm</code>&gt;<code>term</code>时，返回<code>false</code>，以提醒发送者任期过期。</li>
+<li>如果candidate的日志至少和接收者的一样新，且<code>votedFor</code>为空或者正好等于<code>candidateId</code>时（注意Raft的RPC是幂等性的，因此当<code>currentTerm = term &amp;&amp; votedFor = candidateIdx</code>时表示上一次<code>RequestVote</code>的回复丢失了，应该重新响应）返回<code>true</code>。</li>
+</ol>
+<h3 id="行为规定">行为规定<a hidden class="anchor" aria-hidden="true" href="#行为规定">#</a></h3>
+<h4 id="所有服务器">所有服务器<a hidden class="anchor" aria-hidden="true" href="#所有服务器">#</a></h4>
+<ul>
+<li>RPC请求或者响应携带的任期<code>T</code>大于当前任期<code>currenTerm</code>时，更新<code>currenTerm</code>为<code>T</code>，同时转换为Follower。对于旧任期的Leader而言，这意味着网络分区导致了新选举，而原来的Leader不在大多数分区，当分区通信恢复后，旧Leader应该跟随新的Leader。对于Candidate而言，更大任期的<code>RequestVote</code>意味着另一个Candidate发起了新的选举，即使本轮成为了Leader，也会马上收到下一轮的Leader的心跳。为了加速选举，Candidate收到了新任期的RPC直接放弃本轮选举，转换为Follower。</li>
+<li>如果<code>commitIndex</code>&gt;<code>lastApplied</code>，递增<code>lastApplied</code>并将<code>log[lastApplied]</code>应用到状态机上。</li>
+</ul>
+<h4 id="follower">Follower<a hidden class="anchor" aria-hidden="true" href="#follower">#</a></h4>
+<p>如果在选举超时之前没有收到发送<code>AppendEntries</code>或<code>RequestVote</code>，则转换为Follower开启新的选举。</p>
+<h4 id="candidate">Candidate<a hidden class="anchor" aria-hidden="true" href="#candidate">#</a></h4>
+<ul>
+<li>转换为Candidate的步骤：
+<ol>
+<li>递增<code>currentTerm</code></li>
+<li>给自己投票</li>
+<li>重置选举定时器</li>
+<li>并发地向所有节点发送<code>RequestVote</code></li>
+</ol>
+</li>
+<li>如果得到多数选票，转换为Leader</li>
+<li>如果收到了新Leader的<code>AppendEntries</code>，转换为Follower</li>
+<li>如果选举超时，重新选举</li>
+</ul>
+<h4 id="leader">Leader<a hidden class="anchor" aria-hidden="true" href="#leader">#</a></h4>
+<ul>
+<li>转换为Leader后，马上向所有节点发送空<code>AppendEntries</code>作为心跳；每隔一段时间发送心跳。</li>
+<li>收到客户端请求命令后写入本地日志，等到日志成功应用到状态机后再返回响应。</li>
+<li>如果<code>log</code>最大索引≥<code>nextIndex[i]</code>，向第$i$个节点发送携带日志<code>log[nextIndex[i]]</code>的<code>AppendEntries</code>：
+<ul>
+<li>如果成功，更新<code>nextIndex[i]</code>和<code>match[i]</code>。</li>
+<li>失败则递减<code>nextIndex[i]</code>并重试。</li>
+</ul>
+</li>
+</ul>
+<h3 id="性质">性质<a hidden class="anchor" aria-hidden="true" href="#性质">#</a></h3>
+<h4 id="选举安全性">选举安全性<a hidden class="anchor" aria-hidden="true" href="#选举安全性">#</a></h4>
+<p>一个任期最多只能有一个Leader。</p>
+<h4 id="leader只追加日志">Leader只追加日志<a hidden class="anchor" aria-hidden="true" href="#leader只追加日志">#</a></h4>
+<p>Leader永远不覆盖或删除日志，只追加日志。</p>
+<h4 id="日志匹配">日志匹配<a hidden class="anchor" aria-hidden="true" href="#日志匹配">#</a></h4>
+<p>如果两条日志索引和任期相同，那么两条日志之前的所有日志按顺序相同。</p>
+<h4 id="leader完整性">Leader完整性<a hidden class="anchor" aria-hidden="true" href="#leader完整性">#</a></h4>
+<p>已提交的日志会出现在将来所有Leader的日志中。</p>
+<h4 id="状态机安全性">状态机安全性<a hidden class="anchor" aria-hidden="true" href="#状态机安全性">#</a></h4>
+<p>如果某个节点应用了其索引<code>i</code>处的日志，那么这条日志会被应用到所有其他节点。</p>
+<h3 id="可理解性">可理解性<a hidden class="anchor" aria-hidden="true" href="#可理解性">#</a></h3>
+<p>Raft提出的目的之一就是可理解性。为此，Raft尽可能详细清楚地阐述算法：</p>
+<ul>
+<li>
+<p>使用领导者使得Raft比对等点对点的Paxos更加简单。</p>
+</li>
+<li>
+<p>将问题分解为容易理解和解决的独立部分。Raft将一致性问题分解为：领导者选举、日志复制和安全性三个子问题。</p>
+</li>
+<li>
+<p>减少状态数量以消除算法的不确定性。例如：</p>
+<ul>
+<li>Raft通过随机的方式选择Leader。Raft一开始设想过设计一种排名系统，基于Candidate的排名选举Leader。但这种做法在可用性方面略显不足：高排名的Candidate宕机会导致低排名的Candidate超时重新选举，极端情况下会导致选举不断重置。经过多次试验后，作者得出结论随机重试更加易于理解。</li>
+<li>日志不允许有空洞？（<strong>待思考确认</strong>）</li>
+</ul>
+</li>
+</ul>
+<h3 id="算法基础">算法基础<a hidden class="anchor" aria-hidden="true" href="#算法基础">#</a></h3>
+<h4 id="日志复制">日志复制<a hidden class="anchor" aria-hidden="true" href="#日志复制">#</a></h4>
+<p>日志可以被<strong>安全</strong>地应用到状态机，称其为已<strong>提交</strong>的。Raft保证已提交的日志必须持久化并且最终会被所有可用的状态机执行。因此只有日志复制到半数以上的服务器上时才可提交。当日志提交后，服务器就会将提交的日志按照顺序应用到状态机中。</p>
+<p>在讨论保证安全性时，已提交的概念会发生些许<strong>变动</strong>。</p>
+<p>日志的匹配特性是安全性的重要保证：</p>
+<ul>
+<li>
+<p>如果在不同的日志中的两个条目拥有相同的索引和任期号，那么他们存储了相同的指令。</p>
+<p>一个任期只有一个Leader，Leader最多在一个任期里在指定的一个日志索引位置创建一条日志条目。因此，任期和索引相同的日志必是同一条。</p>
+</li>
+<li>
+<p>如果在不同的日志中的两个条目拥有相同的索引和任期号，那么他们之前的所有日志条目也全部相同。</p>
+<p>这条性质是由<code>AppendEntries</code>附加的一致性检查保证的：Follow从首个匹配Leader的索引开始复制日志。</p>
+<p>可以使用数学归纳法证明：一开始的初始空日志状态显然满足日志匹配特性，之后每一次拓展日志时，已经存在的与Leader相同的日志如果符合匹配特性，那么一致性检查后添加的日志也必定和Leader相同，也符合匹配特性。</p>
+</li>
+</ul>
+<p>正常情况下，Leader和Follower的日志保持一致，一致性检查永远不会失败。然而，Leader崩溃的情况会使得日志处于不一致的状态（老的Leader可能还没有完全复制所有的日志条目），Follower可能会丢失一些在新的领导者中有的日志条目，也可能拥有一些领导者没有的日志条目，或者两者都发生。丢失或者多出日志条目可能会持续多个任期。
+Raft通过强制跟随者直接复制Leader的日志解决这个问题。</p>
+<h4 id="安全性">安全性<a hidden class="anchor" aria-hidden="true" href="#安全性">#</a></h4>
+<p>上述机制不足以保证安全性——每个状态机按照相同的顺序应用相同的日志。例如，Follower可能在尚未复制已提交的日志下被选为Leader，并因此覆盖了这些提交的日志。必须对选举Leader添加限制以保证领导者完整性。</p>
+<h5 id="选举限制">选举限制<a hidden class="anchor" aria-hidden="true" href="#选举限制">#</a></h5>
+<p>Leader必须包含所有已提交的日志。Raft通过限制投票的方式实现：持有更新日志的Candidate才能获得选票。<code>RequestVote</code>会携带Candidate最后一条日志的索引和任期，Follower会其与自己最新的日志比较：</p>
+<ul>
+<li>任期更大的日志更新</li>
+<li>任期相同时，索引更大的日志更新</li>
+</ul>
+<p>只要Candidate发送的日志比Follower旧，Follow就会拒绝投票。已经提交的日志必然保存在大多数服务器上，而Candidate必须获得大多数服务器的投票才能称为Leader，根据容斥原理，二者必有交集。也就是说Candidate必须获得保存有提交日志服务器中至少其中一个的投票，即Candidate必须具有已提交的这条日志。这就保证了所有已经提交的日志必然出现在新的Leader中。</p>
+<p><img loading="lazy" src="D:%5cnote%5c%e5%88%86%e5%b8%83%e5%bc%8f%e7%b3%bb%e7%bb%9f%5c%e9%80%89%e4%b8%be%e9%99%90%e5%88%b6.png" alt="选票与提交日志必有交集"  />
+</p>
+<h5 id="提交限制">提交限制<a hidden class="anchor" aria-hidden="true" href="#提交限制">#</a></h5>
+<p>在讨论日志提交曾经提到为了保证安全性，必须调整提交的概念。考虑下面这个例子</p>
+<p><img loading="lazy" src="D:%5cnote%5c%e5%88%86%e5%b8%83%e5%bc%8f%e7%b3%bb%e7%bb%9f%5c%e6%8f%90%e4%ba%a4%e4%b9%8b%e5%89%8d%e4%bb%bb%e6%9c%9f%e5%86%85%e7%9a%84%e6%97%a5%e5%bf%97.png" alt="提交之前任期内的日志"  />
+</p>
+<p>任期c的Leader已经把日志2复制到了大多数节点上，但是这时还不能称日志2为已提交的。因为如果这时S1崩溃随后S5又一次赢得了选举，日志2就会被S5的日志3覆盖。d1并不违反提交<strong>原始</strong>的定义和约束，但是违反了日志提交后必须应用到状态机的约束。</p>
+<p>出现这个问题的原因是Raft比较日志新旧程度时优先比较任期。因此复制旧任期的日志不能马上提交，必须等到至少一条新任期的日志复制到大多数节点时才可以提交，这可以保证旧任期的日志不会被中间任期覆盖。即必须等到d2中日志4也复制到大多数节点时，日志2才可以提交，这就避免了S5的日志3覆盖日志2的可能性。</p>
+<h4 id="持久化存储">持久化存储<a hidden class="anchor" aria-hidden="true" href="#持久化存储">#</a></h4>
+<h5 id="log"><code>Log</code><a hidden class="anchor" aria-hidden="true" href="#log">#</a></h5>
+<p>Raft算法的核心就是同步日志。当服务器宕机后唯一能用来重建状态机的数据就是Log，想象一下，在Log没有持久化保存的情况下所有的服务器都宕机了根本无法重建状态机。因此Log必须被持久化。</p>
+<h5 id="votedfor"><code>votedFor</code><a hidden class="anchor" aria-hidden="true" href="#votedfor">#</a></h5>
+<p>Raft的选举规则规定Follower每个任期只能投一张票。如果不保存<code>votedFor</code>，那么重启时就无法知道崩溃前给哪个Candidate投过票，Follower也就不知道是否应该给当前接收到的RequestVote投票。为了防止同个任期重复投票的情况，<code>votedFor</code>必须持久化。</p>
+<h5 id="currentterm"><code>CurrentTerm</code><a hidden class="anchor" aria-hidden="true" href="#currentterm">#</a></h5>
+<p>单纯知道<code>voteFor</code>并不能保证唯一投票，因为服务器重启后不知道上一次的投票任期。从Log的任期推断最大任期是不正确的，因为一次没有Leader的选举任期没有产生任何Log，也就无法从Log中得知最大投票任期。因此持久化当前任期<code>CurrentTerm</code>也是必须的。</p>
+
+
+  </div>
+
+  <footer class="post-footer">
+    <ul class="post-tags">
+    </ul>
+
+<div class="share-buttons">
+</div>
+  </footer>
+</article>
+    </main>
+    
+<footer class="footer">
+    <span>&copy; 2022 <a href="https://voidsow.github.io/">Voidsow&#39;s Blog</a></span>
+    <span>
+        Powered by
+        <a href="https://gohugo.io/" rel="noopener noreferrer" target="_blank">Hugo</a> &
+        <a href="https://github.com/adityatelange/hugo-PaperMod/" rel="noopener" target="_blank">PaperMod</a>
+    </span>
+</footer>
+<a href="#top" aria-label="go to top" title="Go to Top (Alt + G)" class="top-link" id="top-link" accesskey="g">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 6" fill="currentColor">
+        <path d="M12 6H0l6-6z" />
+    </svg>
+</a>
+
+<script>
+    let menu = document.getElementById('menu')
+    if (menu) {
+        menu.scrollLeft = localStorage.getItem("menu-scroll-position");
+        menu.onscroll = function () {
+            localStorage.setItem("menu-scroll-position", menu.scrollLeft);
+        }
+    }
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener("click", function (e) {
+            e.preventDefault();
+            var id = this.getAttribute("href").substr(1);
+            if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                document.querySelector(`[id='${decodeURIComponent(id)}']`).scrollIntoView({
+                    behavior: "smooth"
+                });
+            } else {
+                document.querySelector(`[id='${decodeURIComponent(id)}']`).scrollIntoView();
+            }
+            if (id === "top") {
+                history.replaceState(null, null, " ");
+            } else {
+                history.pushState(null, null, `#${id}`);
+            }
+        });
+    });
+
+</script>
+<script>
+    var mybutton = document.getElementById("top-link");
+    window.onscroll = function () {
+        if (document.body.scrollTop > 800 || document.documentElement.scrollTop > 800) {
+            mybutton.style.visibility = "visible";
+            mybutton.style.opacity = "1";
+        } else {
+            mybutton.style.visibility = "hidden";
+            mybutton.style.opacity = "0";
+        }
+    };
+
+</script>
+<script>
+    document.getElementById("theme-toggle").addEventListener("click", () => {
+        if (document.body.className.includes("dark")) {
+            document.body.classList.remove('dark');
+            localStorage.setItem("pref-theme", 'light');
+        } else {
+            document.body.classList.add('dark');
+            localStorage.setItem("pref-theme", 'dark');
+        }
+    })
+
+</script>
+<script>
+    document.querySelectorAll('pre > code').forEach((codeblock) => {
+        const container = codeblock.parentNode.parentNode;
+
+        const copybutton = document.createElement('button');
+        copybutton.classList.add('copy-code');
+        copybutton.innerHTML = 'copy';
+
+        function copyingDone() {
+            copybutton.innerHTML = 'copied!';
+            setTimeout(() => {
+                copybutton.innerHTML = 'copy';
+            }, 2000);
+        }
+
+        copybutton.addEventListener('click', (cb) => {
+            if ('clipboard' in navigator) {
+                navigator.clipboard.writeText(codeblock.textContent);
+                copyingDone();
+                return;
+            }
+
+            const range = document.createRange();
+            range.selectNodeContents(codeblock);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            try {
+                document.execCommand('copy');
+                copyingDone();
+            } catch (e) { };
+            selection.removeRange(range);
+        });
+
+        if (container.classList.contains("highlight")) {
+            container.appendChild(copybutton);
+        } else if (container.parentNode.firstChild == container) {
+            
+        } else if (codeblock.parentNode.parentNode.parentNode.parentNode.parentNode.nodeName == "TABLE") {
+            
+            codeblock.parentNode.parentNode.parentNode.parentNode.parentNode.appendChild(copybutton);
+        } else {
+            
+            codeblock.parentNode.appendChild(copybutton);
+        }
+    });
+</script>
+</body>
+
+</html>

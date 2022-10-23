@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Voidsow&#39;s Blog</title>
+    <link>https://voidsow.github.io/</link>
+    <description>Recent content on Voidsow&#39;s Blog</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>zh-cn</language>
+    <lastBuildDate>Sun, 23 Oct 2022 23:59:47 +0800</lastBuildDate><atom:link href="https://voidsow.github.io/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Raft</title>
+      <link>https://voidsow.github.io/note/raft/</link>
+      <pubDate>Sun, 23 Oct 2022 23:59:47 +0800</pubDate>
+      
+      <guid>https://voidsow.github.io/note/raft/</guid>
+      <description>算法概述 状态 所有节点的持久化状态 必须先持久化后再响应RPC
+currenTerm votedFor log[] 所有节点的非持久化状态 commitIndex：已提交日志索引的最大值。初始化为0，单调递增。 lastApplied：应用到状态机的日志索引的最大值。初始化为0，单调递增。 Leader的非持久化状态 选举结束后初始化
+nextIndex[]：每个节点的期望得到的下一条日志的索引。初始化为Leader日志索引最大值+1。
+matchIndex[]：每个节点已经应用到状态机的日志的索引最大值。初始化为0，单调递增。
+AppendEntries RPC 参数 term：leader的任期 leaderId：Follower就可以重定向客户端请求到leader prevLogIndex：nextIndex的前驱日志索引 prevLogTerm：prevLogIndex对应日志的任期 entries[]：待存储的日志 leaderCommit：leader的commitIndex 返回值 term：自己的currenTerm，leader得以知道自己是否已经过期 success：当Follower保存有与prevLogIndex和prevLogTerm相对应的日志时返回true 接收者实现 当接收者的currentTerm&amp;gt;term时，返回false，以提醒发送者任期过期。 在prevLogIndex位置不存在任期为prevLogTerm的位置时返回false。表示日志缺失。 当prevLogIndex位置的日志任期与prevLogTerm不匹配时返回false并将冲突位置及其之后的日志删除。 添加新日志。 如果leaderCommit&amp;gt;commitIndex，设置新的commitIndex为min(leaderCommit,最后一条日志索引)。 RequestVote RPC 参数 term：candidate的任期 candidateId：发起选举的candidate的Id lastLogIndex：candidate的最后一条日志的索引 lastLogTerm：candidate的最后一条日志的任期 返回值 term：接收者的currenTerm，candidate得以知道自己是否已经过期 success：投票给candidate时返回true 接收者实现 当接收者的currentTerm&amp;gt;term时，返回false，以提醒发送者任期过期。 如果candidate的日志至少和接收者的一样新，且votedFor为空或者正好等于candidateId时（注意Raft的RPC是幂等性的，因此当currentTerm = term &amp;amp;&amp;amp; votedFor = candidateIdx时表示上一次RequestVote的回复丢失了，应该重新响应）返回true。 行为规定 所有服务器 RPC请求或者响应携带的任期T大于当前任期currenTerm时，更新currenTerm为T，同时转换为Follower。对于旧任期的Leader而言，这意味着网络分区导致了新选举，而原来的Leader不在大多数分区，当分区通信恢复后，旧Leader应该跟随新的Leader。对于Candidate而言，更大任期的RequestVote意味着另一个Candidate发起了新的选举，即使本轮成为了Leader，也会马上收到下一轮的Leader的心跳。为了加速选举，Candidate收到了新任期的RPC直接放弃本轮选举，转换为Follower。 如果commitIndex&amp;gt;lastApplied，递增lastApplied并将log[lastApplied]应用到状态机上。 Follower 如果在选举超时之前没有收到发送AppendEntries或RequestVote，则转换为Follower开启新的选举。
+Candidate 转换为Candidate的步骤： 递增currentTerm 给自己投票 重置选举定时器 并发地向所有节点发送RequestVote 如果得到多数选票，转换为Leader 如果收到了新Leader的AppendEntries，转换为Follower 如果选举超时，重新选举 Leader 转换为Leader后，马上向所有节点发送空AppendEntries作为心跳；每隔一段时间发送心跳。 收到客户端请求命令后写入本地日志，等到日志成功应用到状态机后再返回响应。 如果log最大索引≥nextIndex[i]，向第$i$个节点发送携带日志log[nextIndex[i]]的AppendEntries： 如果成功，更新nextIndex[i]和match[i]。 失败则递减nextIndex[i]并重试。 性质 选举安全性 一个任期最多只能有一个Leader。</description>
+    </item>
+    
+    <item>
+      <title>Archives</title>
+      <link>https://voidsow.github.io/archives/</link>
+      <pubDate>Sun, 23 Oct 2022 23:59:01 +0800</pubDate>
+      
+      <guid>https://voidsow.github.io/archives/</guid>
+      <description></description>
+    </item>
+    
+  </channel>
+</rss>
