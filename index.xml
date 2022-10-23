@@ -21,14 +21,6 @@ AppendEntries RPC 参数 term：leader的任期 leaderId：Follower就可以重�
 Candidate 转换为Candidate的步骤： 递增currentTerm 给自己投票 重置选举定时器 并发地向所有节点发送RequestVote 如果得到多数选票，转换为Leader 如果收到了新Leader的AppendEntries，转换为Follower 如果选举超时，重新选举 Leader 转换为Leader后，马上向所有节点发送空AppendEntries作为心跳；每隔一段时间发送心跳。 收到客户端请求命令后写入本地日志，等到日志成功应用到状态机后再返回响应。 如果log最大索引≥nextIndex[i]，向第$i$个节点发送携带日志log[nextIndex[i]]的AppendEntries： 如果成功，更新nextIndex[i]和match[i]。 失败则递减nextIndex[i]并重试。 性质 选举安全性 一个任期最多只能有一个Leader。</description>
     </item>
     
-    <item>
-      <title>Archives</title>
-      <link>https://voidsow.github.io/archives/</link>
-      <pubDate>Sun, 23 Oct 2022 23:59:01 +0800</pubDate>
-      
-      <guid>https://voidsow.github.io/archives/</guid>
-      <description></description>
-    </item>
     
   </channel>
 </rss>
